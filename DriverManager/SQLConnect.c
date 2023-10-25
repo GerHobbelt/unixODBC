@@ -3216,10 +3216,16 @@ static int pool_match( CPOOLHEAD *pooh,
 }
 
 /*
+ * use this variable to spot odd behavour with memory and Python, that looks
+ * like copies of the process memory are replicated and then wound backwards
+ */
+
+/*
+static int ecount;
 
 int display_pool( void )
 {
-    printf( "pool_head: %p\n", pool_head );
+    printf( "pool_head: %p %d\n", pool_head, ecount ++ );
     if ( pool_head ) {
         CPOOLHEAD *pptr;
         CPOOLENT *pent;
@@ -3244,6 +3250,7 @@ int display_pool( void )
                 printf( "\t\t\tcursors: %d\n", pent -> cursors );
                 printf( "\t\t\tconnection -> env: %p\n", pent -> connection.environment );
                 printf( "\t\t\tconnection -> driver_env: %p\n", pent -> connection.driver_env );
+                printf( "\t\t\tconnection -> driver_dbc: %p\n", pent -> connection.driver_dbc );
                 printf( "\t\t\tnext: %p\n", pent -> next );
                 printf( "\n" );
 
@@ -3255,7 +3262,6 @@ int display_pool( void )
         }
     }
 }
-
 */
 
 /*
@@ -3363,7 +3369,7 @@ restart:;
              * has it expired ? Do some cleaning up first
              */
 
-            if ( ptre -> expiry_time < current_time )
+            if ( ptre -> expiry_time < current_time && ptre -> in_use == 0 )
             {
                 /*
                  * disconnect and remove
@@ -3451,42 +3457,71 @@ disconnect_and_remove:
              */
             dead = 0;
 
-            if ((CHECK_SQLGETCONNECTATTR(( &ptre -> connection )) &&
-                    SQL_SUCCEEDED( ret = SQLGETCONNECTATTR(( &ptre -> connection ),
-                        ptre -> connection.driver_dbc,
-                        SQL_ATTR_CONNECTION_DEAD,
-                        &dead,
-                        SQL_IS_INTEGER,
-                        0 ))) ||
-                (CHECK_SQLGETCONNECTATTRW(( &ptre -> connection )) &&
-                    SQL_SUCCEEDED( ret = SQLGETCONNECTATTRW(( &ptre -> connection ),
-                        ptre -> connection.driver_dbc,
-                        SQL_ATTR_CONNECTION_DEAD,
-                        &dead,
-                        SQL_IS_INTEGER,
-                        0 ))) ||
-                (CHECK_SQLGETCONNECTOPTION(( &ptre -> connection )) &&
-                    SQL_SUCCEEDED( ret = SQLGETCONNECTOPTION(( &ptre -> connection ),
-                        ptre -> connection.driver_dbc,
-                        SQL_ATTR_CONNECTION_DEAD,
-                        &dead ))) ||
-                (CHECK_SQLGETCONNECTOPTIONW(( &ptre -> connection )) &&
-                    SQL_SUCCEEDED( ret = SQLGETCONNECTOPTIONW(( &ptre -> connection ),
-                        ptre -> connection.driver_dbc,
-                        SQL_ATTR_CONNECTION_DEAD,
-                        &dead )))
-            )
+            if ( CHECK_SQLGETCONNECTATTR(( &ptre -> connection )))
             {
-                /*
-                 * if it failed assume that it's because it doesn't support
-                 * it, but it's ok
-                 */
-                if ( dead == SQL_CD_TRUE )
+                ret = SQLGETCONNECTATTR(( &ptre -> connection ),
+                        ptre -> connection.driver_dbc,
+                        SQL_ATTR_CONNECTION_DEAD,
+                        &dead,
+                        SQL_IS_INTEGER,
+                        0 );
+                if ( SQL_SUCCEEDED( ret )) 
                 {
-                    goto disconnect_and_remove;
+                    has_checked = 1;
+                    if ( dead == SQL_CD_TRUE )
+                    {
+                        goto disconnect_and_remove;
+                    }
                 }
-                has_checked = 1;
             }
+            if ( !has_checked && CHECK_SQLGETCONNECTATTRW(( &ptre -> connection )))
+            {
+                ret = SQLGETCONNECTATTRW(( &ptre -> connection ),
+                        ptre -> connection.driver_dbc,
+                        SQL_ATTR_CONNECTION_DEAD,
+                        &dead,
+                        SQL_IS_INTEGER,
+                        0 );
+                if ( SQL_SUCCEEDED( ret )) 
+                {
+                    has_checked = 1;
+                    if ( dead == SQL_CD_TRUE )
+                    {
+                        goto disconnect_and_remove;
+                    }
+                }
+            }
+            if ( !has_checked && CHECK_SQLGETCONNECTOPTION(( &ptre -> connection ))) 
+            {
+                    ret = SQLGETCONNECTOPTION(( &ptre -> connection ),
+                        ptre -> connection.driver_dbc,
+                        SQL_ATTR_CONNECTION_DEAD,
+                        &dead );
+                if ( SQL_SUCCEEDED( ret )) 
+                {
+                    has_checked = 1;
+                    if ( dead == SQL_CD_TRUE )
+                    {
+                        goto disconnect_and_remove;
+                    }
+                }
+            }
+            if ( !has_checked && CHECK_SQLGETCONNECTOPTIONW(( &ptre -> connection ))) 
+            {
+                    ret = SQLGETCONNECTOPTIONW(( &ptre -> connection ),
+                        ptre -> connection.driver_dbc,
+                        SQL_ATTR_CONNECTION_DEAD,
+                        &dead );
+                if ( SQL_SUCCEEDED( ret )) 
+                {
+                    has_checked = 1;
+                    if ( dead == SQL_CD_TRUE )
+                    {
+                        goto disconnect_and_remove;
+                    }
+                }
+            }
+
             /*
              * Need some other way of checking, This isn't safe to pool...
              * But it needs to be something thats not slower than connecting...
